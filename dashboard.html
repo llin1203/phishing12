@@ -213,11 +213,11 @@ nav{
     <div class="nav-icon" style="flex-shrink:0;"><i class="ti ti-database" aria-hidden="true"></i></div>
     <div class="import-info">
       <div class="import-title">Belum ada data riwayat</div>
-      <div class="import-sub">Import JSON dari extension atau klik "Coba data demo" untuk melihat contoh dashboard</div>
+      <div class="import-sub">Import JSON/ZIP dari extension atau klik "Coba data demo" untuk melihat contoh dashboard</div>
     </div>
     <div class="import-actions">
       <button class="btn btn-primary" id="importBtnBar">
-        <i class="ti ti-upload" aria-hidden="true"></i> Import JSON
+        <i class="ti ti-upload" aria-hidden="true"></i> Import JSON / ZIP
       </button>
       <button class="btn btn-ghost" id="demoBtn">Coba demo</button>
     </div>
@@ -336,11 +336,11 @@ nav{
   <div class="modal">
     <div class="modal-title">Import riwayat scan</div>
     <div class="modal-sub">
-      Buka extension → tab Riwayat → klik <strong>Export</strong> → upload file JSON.<br/>
+      Buka extension → tab Riwayat → klik <strong>Export</strong> → upload file JSON atau ZIP.<br/>
       Atau copy dari background service worker console:<br/>
       <code style="font-family:'DM Mono',monospace;font-size:10px;color:var(--purple);">chrome.storage.local.get("history", d => console.log(JSON.stringify(d.history)))</code>
     </div>
-    <input type="file" id="fileInput" accept=".json" style="display:none;">
+    <input type="file" id="fileInput" accept=".json,.zip" style="display:none;">
     <button class="btn btn-ghost" onclick="document.getElementById('fileInput').click()" style="margin-bottom:10px;width:100%;">
       <i class="ti ti-file-upload" aria-hidden="true"></i> Pilih file JSON
     </button>
@@ -364,15 +364,43 @@ let pieInst, barInst, lineInst, histInst, domainInst;
 
 // ── INIT ──────────────────────────────────────────────────
 window.addEventListener('DOMContentLoaded', () => {
-  // Cek URL param dari extension
+  // 1. Cek URL param dari extension (prioritas utama)
   const params = new URLSearchParams(window.location.search);
   const dataParam = params.get('data');
+  let autoLoaded = false;
+
   if (dataParam) {
     try {
       const data = JSON.parse(decodeURIComponent(dataParam));
-      renderDashboard(data);
+      if (Array.isArray(data) && data.length > 0) {
+        renderDashboard(data);
+        autoLoaded = true;
+        try { localStorage.setItem('phishingHistory', JSON.stringify(data)); } catch {}
+      }
     } catch(e) { console.error('Invalid data param', e); }
   }
+
+  // 2. Fallback: muat dari localStorage (data sesi sebelumnya)
+  if (!autoLoaded) {
+    try {
+      const saved = localStorage.getItem('phishingHistory');
+      if (saved) {
+        const data = JSON.parse(saved);
+        if (Array.isArray(data) && data.length > 0) {
+          renderDashboard(data);
+          autoLoaded = true;
+        }
+      }
+    } catch {}
+  }
+
+  // Listener untuk data dari Chrome Extension (via window.postMessage)
+  window.addEventListener('message', (event) => {
+    if (event.data && event.data.type === 'LOAD_HISTORY' && Array.isArray(event.data.history) && event.data.history.length > 0) {
+      renderDashboard(event.data.history);
+      try { localStorage.setItem('phishingHistory', JSON.stringify(event.data.history)); } catch {}
+    }
+  });
 
   // Event listeners
   document.getElementById('importBtn').addEventListener('click', openModal);
@@ -406,15 +434,28 @@ window.addEventListener('DOMContentLoaded', () => {
 function openModal() { document.getElementById('modalOverlay').classList.add('open'); }
 function closeModal() { document.getElementById('modalOverlay').classList.remove('open'); }
 
-function loadFromFile(e) {
+async function loadFromFile(e) {
   const file = e.target.files[0];
   if (!file) return;
-  const reader = new FileReader();
-  reader.onload = ev => {
-    try { renderDashboard(JSON.parse(ev.target.result)); closeModal(); }
-    catch { alert('Format JSON tidak valid.'); }
-  };
-  reader.readAsText(file);
+
+  if (file.name.endsWith('.zip')) {
+    try {
+      const { default: JSZip } = await import('https://cdn.jsdelivr.net/npm/jszip@3.10.1/+esm');
+      const zip = await JSZip.loadAsync(file);
+      const jsonFile = Object.values(zip.files).find(f => f.name.endsWith('.json'));
+      if (!jsonFile) { alert('File ZIP tidak mengandung JSON yang valid.'); return; }
+      const text = await jsonFile.async('text');
+      renderDashboard(JSON.parse(text));
+      closeModal();
+    } catch { alert('Gagal membaca file ZIP.'); }
+  } else {
+    const reader = new FileReader();
+    reader.onload = ev => {
+      try { renderDashboard(JSON.parse(ev.target.result)); closeModal(); }
+      catch { alert('Format JSON tidak valid.'); }
+    };
+    reader.readAsText(file);
+  }
 }
 
 function loadFromText() {
